@@ -46,6 +46,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::{convert::TryFrom, fmt::Debug, ops::Deref, sync::Arc};
+use bitcrypto::sha256;
+use std::convert::TryInto;
 
 pub mod solana_common;
 mod solana_decode_tx_helpers;
@@ -340,12 +342,11 @@ impl TryToPubkey for [u8] {
     }
 }
 
-/*impl<'a> TryToPubkey for &'a [u8] {
+impl<'a> TryToPubkey for &'a [u8] {
     fn try_to_pubkey(&self) -> Result<Pubkey, String> {
-        Pubkey::try_from_slice(self)
-            .map_err(|e| format!("Failed to create Pubkey from slice: {:?}", e))
+        self.try_to_pubkey()
     }
-}*/
+}
 
 impl<T: TryToPubkey> TryToPubkey for Option<T> {
     fn try_to_pubkey(&self) -> Result<Pubkey, String> {
@@ -429,9 +430,17 @@ impl SolanaCoin {
     }
 
     fn send_hash_time_locked_payment(&self, args: SendPaymentArgs<'_>) -> SolTxFut {
-        //let receiver_addr = try_tx_fus!(addr_from_raw_pubkey(args.other_pubkey));
+        let receiver_pubkey = try_tx_fus!(args.other_pubkey.try_to_pubkey());
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
+        let id = self.etomic_swap_id(try_tx_fus!(args.time_lock.try_into()), args.secret_hash);
         self.sign_and_send_transaction(swap_program_id, vec![], vec![])
+    }
+
+    fn etomic_swap_id(&self, time_lock: u32, secret_hash: &[u8]) -> Vec<u8> {
+        let mut input = vec![];
+        input.extend_from_slice(&time_lock.to_le_bytes());
+        input.extend_from_slice(secret_hash);
+        sha256(&input).to_vec()
     }
 
     pub fn sign_and_send_transaction(
