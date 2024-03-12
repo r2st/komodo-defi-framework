@@ -1,4 +1,4 @@
-use super::{CoinBalance, HistorySyncState, MarketCoinOps, MmCoin, SwapOps, TradeFee, TransactionEnum, WatcherOps};
+use super::{CoinBalance, HistorySyncState, MarketCoinOps, MmCoin, SwapOps, ToBytes, TradeFee, Transaction as TransactionCom, TransactionEnum, TransactionErr, WatcherOps};
 use crate::coin_errors::{MyAddressError, ValidatePaymentResult};
 use crate::solana::solana_common::{lamports_to_sol, PrepareTransferData, SufficientBalanceError};
 use crate::solana::spl::SplTokenInfo;
@@ -39,6 +39,9 @@ use solana_sdk::pubkey::ParsePubkeyError;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::{pubkey::Pubkey,
                  signature::{Keypair, Signer}};
+use solana_sdk::instruction::AccountMeta;
+use solana_sdk::instruction::Instruction;
+pub use solana_sdk::signature::Signature as SolSignature;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -286,7 +289,7 @@ async fn withdraw_base_coin_impl(coin: SolanaCoin, req: WithdrawRequest) -> With
             SolanaFeeDetails {
                 amount: res.sol_required,
             }
-            .into(),
+                .into(),
         ),
         coin: coin.ticker.clone(),
         internal_id: vec![].into(),
@@ -306,13 +309,60 @@ async fn withdraw_impl(coin: SolanaCoin, req: WithdrawRequest) -> WithdrawResult
     withdraw_base_coin_impl(coin, req).await
 }
 
+type SolTxFut = Box<dyn Future<Item = TransactionEnum, Error = TransactionErr> + Send + 'static>;
+
+impl ToBytes for SolSignature {
+    fn to_bytes(&self) -> Vec<u8> { self.to_string().into_bytes() }
+}
+impl TransactionCom for SolSignature {
+    fn tx_hex(&self) -> Vec<u8> {
+        self.to_bytes().to_vec()
+    }
+
+    fn tx_hash(&self) -> BytesJson {
+        self.tx_hex().into()
+    }
+}
+
+pub trait TryToPubkey {
+    fn try_to_pubkey(&self) -> Result<Pubkey, String>;
+}
+
+impl TryToPubkey for BytesJson {
+    fn try_to_pubkey(&self) -> Result<Pubkey, String> {
+        self.0.as_slice().try_to_pubkey()
+    }
+}
+
+impl TryToPubkey for [u8] {
+    fn try_to_pubkey(&self) -> Result<Pubkey, String> {
+        self.try_to_pubkey()
+    }
+}
+
+/*impl<'a> TryToPubkey for &'a [u8] {
+    fn try_to_pubkey(&self) -> Result<Pubkey, String> {
+        Pubkey::try_from_slice(self)
+            .map_err(|e| format!("Failed to create Pubkey from slice: {:?}", e))
+    }
+}*/
+
+impl<T: TryToPubkey> TryToPubkey for Option<T> {
+    fn try_to_pubkey(&self) -> Result<Pubkey, String> {
+        match self {
+            Some(ref inner) => inner.try_to_pubkey(),
+            None => Err("Cannot convert None to pubkey".to_string()),
+        }
+    }
+}
+
 impl SolanaCoin {
     pub async fn estimate_withdraw_fees(&self) -> Result<(solana_sdk::hash::Hash, u64), MmError<ClientError>> {
         let hash = async_blocking({
             let coin = self.clone();
             move || coin.rpc().get_latest_blockhash()
         })
-        .await?;
+            .await?;
         let to = self.key_pair.pubkey();
 
         let tx = solana_sdk::system_transaction::transfer(&self.key_pair, &to, LAMPORTS_DUMMY_AMOUNT, hash);
@@ -320,7 +370,7 @@ impl SolanaCoin {
             let coin = self.clone();
             move || coin.rpc().get_fee_for_message(tx.message())
         })
-        .await?;
+            .await?;
         Ok((hash, fees))
     }
 
@@ -334,7 +384,7 @@ impl SolanaCoin {
                 )
             }
         })
-        .await?;
+            .await?;
         if token_accounts.is_empty() {
             return Ok(CoinBalance {
                 spendable: Default::default(),
@@ -347,7 +397,7 @@ impl SolanaCoin {
             let coin = self.clone();
             move || coin.rpc().get_token_account_balance(&actual_token_pubkey)
         })
-        .await?;
+            .await?;
         let balance =
             BigDecimal::from_str(&amount.ui_amount_string).map_to_mm(|e| BalanceError::Internal(e.to_string()))?;
         Ok(CoinBalance {
@@ -376,6 +426,56 @@ impl SolanaCoin {
     pub fn get_spl_tokens_infos(&self) -> HashMap<String, SplTokenInfo> {
         let guard = self.spl_tokens_infos.lock().unwrap();
         (*guard).clone()
+    }
+
+    fn send_hash_time_locked_payment(&self, args: SendPaymentArgs<'_>) -> SolTxFut {
+        //let receiver_addr = try_tx_fus!(addr_from_raw_pubkey(args.other_pubkey));
+        let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
+        self.sign_and_send_transaction(swap_program_id, vec![], vec![])
+    }
+
+    pub fn sign_and_send_transaction(
+        &self,
+        program_id: Pubkey,
+        accounts: Vec<AccountMeta>,
+        data: Vec<u8>,
+    ) -> SolTxFut {
+        let coin = self.clone();
+        // Construct the instruction to send to the program
+        // The parameters here depend on your specific program's requirements
+        let instruction = Instruction {
+            program_id,
+            accounts, // Specify account metas here
+            data,     // Pass data to the program here
+        };
+
+        // Send the transaction
+        let fut = async move {
+
+            // Create a transaction
+            let recent_blockhash = match coin.client.get_latest_blockhash() {
+                Ok(blockhash) => blockhash,
+                Err(e) => return Err(TransactionErr::Plain(format!("Failed to get recent blockhash: {:?}", e))),
+            };
+            let transaction = Transaction::new_signed_with_payer(
+                &[instruction],
+                Some(&coin.key_pair.pubkey()), //payer pubkey
+                &[&coin.key_pair], //payer
+                recent_blockhash,
+            );
+
+            match coin.client.send_and_confirm_transaction(&transaction) {
+                Ok(signature) => {
+                    println!("Transaction sent successfully. Signature: {}", signature);
+                    Ok(TransactionEnum::SignedSolTx(signature))
+                },
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                    Err(TransactionErr::Plain(ERRL!("Solana ClientError: {:?}", e)))
+                },
+            }
+        };
+        Box::new(fut.boxed().compat())
     }
 }
 
@@ -479,7 +579,12 @@ impl MarketCoinOps for SolanaCoin {
 impl SwapOps for SolanaCoin {
     fn send_taker_fee(&self, _fee_addr: &[u8], dex_fee: DexFee, _uuid: &[u8]) -> TransactionFut { unimplemented!() }
 
-    fn send_maker_payment(&self, _maker_payment_args: SendPaymentArgs) -> TransactionFut { unimplemented!() }
+    fn send_maker_payment(&self, maker_payment: SendPaymentArgs) -> TransactionFut {
+        Box::new(
+            self.send_hash_time_locked_payment(maker_payment)
+                .map(TransactionEnum::from),
+        )
+    }
 
     fn send_taker_payment(&self, _taker_payment_args: SendPaymentArgs) -> TransactionFut { unimplemented!() }
 
