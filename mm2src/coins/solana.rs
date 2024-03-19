@@ -55,6 +55,7 @@ use solana_sdk::native_token::sol_to_lamports;
 use spl_token::solana_program;
 use solana_client::rpc_config::RpcTransactionConfig;
 use solana_transaction_status::UiTransactionEncoding;
+use tonic::IntoRequest;
 
 pub mod solana_common;
 mod solana_decode_tx_helpers;
@@ -499,11 +500,18 @@ impl SolanaCoin {
         let coin = self.clone();
         let signature = SolSignature::new(signature_bytes);
 
-        match coin.client.get_transaction(&signature, UiTransactionEncoding::Json) {
-            Ok(transaction) => println!("{:#?}", transaction),
+        match coin.client.get_transaction(&signature, UiTransactionEncoding::JsonParsed) {
+            Ok(transaction) => {
+                match transaction.transaction.transaction.decode() {
+                    Some(transaction) => {
+                        println!("{:#?}", transaction);
+                    },
+                    None => {},
+                };
+            },
             Err(e) => eprintln!("Error fetching transaction: {:?}", e),
         }
-        (0, [0u8; 32], Pubkey::new_from_array([0; 32]))
+        (sol_to_lamports(0.01), sha256(&[0; 32]).take(), Pubkey::new_from_array([0; 32]))
     }
 
     fn etomic_swap_id(&self, time_lock: u32, secret_hash: &[u8]) -> Vec<u8> {
@@ -563,7 +571,8 @@ impl SolanaCoin {
 
         let seeds_data: &[&[u8]] = &[b"swap_data", receiver_account_pubkey.as_ref()];
         let (vault_pda_data, bump_seed_data) = Pubkey::find_program_address(seeds_data, &program_id);
-        let rent_exemption_lamports = 0;
+
+        let rent_exemption_lamports = self.client.get_minimum_balance_for_rent_exemption(space.try_into().expect("unable to convert space")).expect("error get_minimum_balance_for_rent_exemption");
         (vault_pda, vault_pda_data, bump_seed, bump_seed_data, rent_exemption_lamports)
     }
 

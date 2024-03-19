@@ -10,8 +10,10 @@ use solana_sdk::signature::{Signature, Signer};
 use solana_transaction_status::UiTransactionEncoding;
 use std::ops::Neg;
 use std::str::FromStr;
+use solana_sdk::bs58;
 use mm2_core::mm_ctx::MmCtxBuilder;
 use mm2_test_helpers::for_tests::enable_solana_with_tokens_and_swap_contract;
+use rpc::v1::types::Bytes;
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
@@ -333,6 +335,11 @@ fn solana_test_tx_history() {
 fn solana_coin_send_and_refund_maker_payment() {
     let passphrase = "federal stay trigger hour exist success game vapor become comfort action phone bright ill target wild nasty crumble dune close rare fabric hen iron".to_string();
     let (_, coin) = solana_coin_for_test(passphrase, SolanaNet::Testnet);
+    let solana_program_id = "HQkU15o1JQKn1swtDq6uyYGHX2TMvchrLLDorN79v7Ed";
+    let solana_program_id = bs58::decode(solana_program_id).into_vec().unwrap_or_else(|e| {
+        eprintln!("Failed to decode program ID: {}", e);
+        Vec::new()
+    });
 
     let pk_data = [1; 32];
     let time_lock = now_sec() - 3600;
@@ -346,7 +353,7 @@ fn solana_coin_send_and_refund_maker_payment() {
         other_pubkey: taker_pub,
         secret_hash: &secret_hash,
         amount: "0.01".parse().unwrap(),
-        swap_contract_address: &None,
+        swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: &[],
         payment_instructions: &None,
         watcher_reward: None,
@@ -362,7 +369,7 @@ fn solana_coin_send_and_refund_maker_payment() {
         tx_type_with_secret_hash: SwapTxTypeWithSecretHash::TakerOrMakerPayment {
             maker_secret_hash: &secret_hash,
         },
-        swap_contract_address: &None,
+        swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: pk_data.as_slice(),
         watcher_reward: false,
     };
@@ -374,6 +381,11 @@ fn solana_coin_send_and_refund_maker_payment() {
 fn solana_coin_send_and_spend_maker_payment() {
     let passphrase = "federal stay trigger hour exist success game vapor become comfort action phone bright ill target wild nasty crumble dune close rare fabric hen iron".to_string();
     let (_, coin) = solana_coin_for_test(passphrase, SolanaNet::Testnet);
+    let solana_program_id = "HQkU15o1JQKn1swtDq6uyYGHX2TMvchrLLDorN79v7Ed";
+    let solana_program_id = bs58::decode(solana_program_id).into_vec().unwrap_or_else(|e| {
+        eprintln!("Failed to decode program ID: {}", e);
+        Vec::new()
+    });
 
     let pk_data = [1; 32];
     let lock_time = now_sec() - 1000;
@@ -388,7 +400,7 @@ fn solana_coin_send_and_spend_maker_payment() {
         other_pubkey: taker_pub,
         secret_hash: secret_hash.as_slice(),
         amount: "0.01".parse().unwrap(),
-        swap_contract_address: &None,
+        swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: &[],
         payment_instructions: &None,
         watcher_reward: None,
@@ -406,7 +418,7 @@ fn solana_coin_send_and_spend_maker_payment() {
         other_pubkey: maker_pub,
         secret: &secret,
         secret_hash: &[],
-        swap_contract_address: &None,
+        swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: pk_data.as_slice(),
         watcher_reward: false,
     };
