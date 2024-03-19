@@ -53,6 +53,8 @@ use std::{convert::TryFrom, fmt::Debug, ops::Deref, sync::Arc};
 use num_traits::ToPrimitive;
 use solana_sdk::native_token::sol_to_lamports;
 use spl_token::solana_program;
+use solana_client::rpc_config::RpcTransactionConfig;
+use solana_transaction_status::UiTransactionEncoding;
 
 pub mod solana_common;
 mod solana_decode_tx_helpers;
@@ -452,13 +454,13 @@ impl SolanaCoin {
         let sender = try_tx_fus!(args.other_pubkey.try_to_pubkey());
         let receiver = self.key_pair.pubkey();
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        let amount = "0.01".parse().unwrap();//sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
-        let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
+        let (amount, _secret_hash, token_program) = self.get_transaction_details(args.other_payment_tx);
+        let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, _rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::ReceiverSpend {
-            secret: <[u8; 32]>::try_from(args.secret).expect("unable to convert to 32 byte array"),
+            secret: <[u8; 32]>::try_from(args.secret).unwrap(),
             amount,
             sender,
-            token_program: Pubkey::new_from_array([0; 32]),
+            token_program,
             vault_bump_seed,
             vault_bump_seed_data,
         };
@@ -474,13 +476,13 @@ impl SolanaCoin {
     fn refund_hash_time_locked_payment(&self, args: RefundPaymentArgs) -> SolTxFut {
         let receiver = try_tx_fus!(args.other_pubkey.try_to_pubkey());
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        let amount = "0.01".parse().unwrap();//sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
+        let (amount, secret_hash, token_program) = self.get_transaction_details(args.payment_tx);
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::SenderRefund {
-            secret_hash: <[u8; 32]>::try_from(args.payment_tx).expect("unable to convert to 32 byte array"),
+            secret_hash,
             amount,
             receiver,
-            token_program: Pubkey::new_from_array([0; 32]),
+            token_program,
             vault_bump_seed,
             vault_bump_seed_data,
         };
@@ -491,6 +493,17 @@ impl SolanaCoin {
             AccountMeta::new(solana_program::system_program::id(), false), //system_program must be included
         ];
         self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
+    }
+
+    fn get_transaction_details(&self, signature_bytes: &[u8]) -> (u64, [u8; 32], Pubkey) {
+        let coin = self.clone();
+        let signature = SolSignature::new(signature_bytes);
+
+        match coin.client.get_transaction(&signature, UiTransactionEncoding::Json) {
+            Ok(transaction) => println!("{:#?}", transaction),
+            Err(e) => eprintln!("Error fetching transaction: {:?}", e),
+        }
+        (0, [0u8; 32], Pubkey::new_from_array([0; 32]))
     }
 
     fn etomic_swap_id(&self, time_lock: u32, secret_hash: &[u8]) -> Vec<u8> {
