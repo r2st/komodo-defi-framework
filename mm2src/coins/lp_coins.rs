@@ -588,7 +588,7 @@ pub enum TransactionEnum {
     UtxoTx(UtxoTx),
     SignedEthTx(SignedEthTx),
     #[cfg(all(feature = "enable-solana", not(target_arch = "wasm32")))]
-    SignedSolTx(SolSignature),
+    SolSignature(SolSignature),
     ZTransaction(ZTransaction),
     CosmosTransaction(CosmosTransaction),
     #[cfg(not(target_arch = "wasm32"))]
@@ -597,6 +597,7 @@ pub enum TransactionEnum {
 
 ifrom!(TransactionEnum, UtxoTx);
 ifrom!(TransactionEnum, SignedEthTx);
+ifrom!(TransactionEnum, SolSignature);
 ifrom!(TransactionEnum, ZTransaction);
 #[cfg(not(target_arch = "wasm32"))]
 ifrom!(TransactionEnum, LightningPayment);
@@ -621,7 +622,7 @@ impl Deref for TransactionEnum {
             #[cfg(not(target_arch = "wasm32"))]
             TransactionEnum::LightningPayment(ref p) => p,
             #[cfg(all(feature = "enable-solana", not(target_arch = "wasm32")))]
-            TransactionEnum::SignedSolTx(ref s) => s,
+            TransactionEnum::SolSignature(ref s) => s,
         }
     }
 }

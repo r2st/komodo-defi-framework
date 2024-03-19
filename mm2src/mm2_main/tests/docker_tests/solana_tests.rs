@@ -1,9 +1,17 @@
+use futures01::Future;
 use crate::docker_tests::docker_tests_common::*;
 use mm2_number::bigdecimal::Zero;
 use mm2_test_helpers::for_tests::{disable_coin, enable_solana_with_tokens, enable_spl, sign_message, verify_message};
 use mm2_test_helpers::structs::{EnableSolanaWithTokensResponse, EnableSplResponse, RpcV2Response, SignatureResponse,
                                 VerificationResponse};
 use serde_json as json;
+use coins::{CoinProtocol, MarketCoinOps, RefundPaymentArgs, SendPaymentArgs, SolanaActivationParams, SolanaCoin, SwapOps, SwapTxTypeWithSecretHash};
+use mm2_core::mm_ctx::MmCtxBuilder;
+use coins_activation::solana_with_tokens_activation::{SolanaProtocolInfo, SolanaWithTokensActivationRequest};
+use bitcrypto::sha256;
+use coins::SpendPaymentArgs;
+use coins_activation::prelude::TryFromCoinProtocol;
+use coins_activation::platform_coin_with_tokens::PlatformWithTokensActivationOps;
 
 #[test]
 fn test_solana_and_spl_balance_enable_spl_v2() {
@@ -141,4 +149,144 @@ fn test_disable_solana_platform_coin_with_tokens() {
     // Then try to force disable SOL-DEVNET platform coin.
     let res = block_on(disable_coin(&mm, "SOL-DEVNET", true));
     assert!(!res.passivized);
+}
+
+#[test]
+fn solana_coin_send_and_refund_maker_payment() {
+    let mm = _solana_supplied_node();
+    let platform_conf = block_on(enable_solana_with_tokens(
+        &mm,
+        "SOL-DEVNET",
+        &["USDC-SOL-DEVNET"],
+        "https://api.devnet.solana.com",
+        false,
+    ));
+
+    let ctx = MmCtxBuilder::default().into_mm_arc();
+    let pk_data = [1; 32];
+
+    let activation_request = SolanaWithTokensActivationRequest {
+        platform_request: SolanaActivationParams {
+            confirmation_commitment: Default::default(),
+            client_url: "https://api.devnet.solana.com".to_string(),
+            path_to_address: Default::default(),
+        },
+        spl_tokens_requests: vec![],
+        get_balances: false,
+    };
+    let coin = block_on(SolanaCoin::enable_platform_coin(
+        ctx.clone(),
+        "SOL".to_string(),
+        &platform_conf,
+        activation_request,
+        SolanaProtocolInfo::try_from_coin_protocol(CoinProtocol::SOLANA).unwrap(),
+
+    )).unwrap();
+
+    let time_lock = now_sec() - 3600;
+    let taker_pub = coin.get_public_key().unwrap();
+    let taker_pub = taker_pub.as_bytes();
+    let secret_hash = [0; 20];
+
+    let args = SendPaymentArgs {
+        time_lock_duration: 0,
+        time_lock,
+        other_pubkey: taker_pub,
+        secret_hash: &secret_hash,
+        amount: "0.01".parse().unwrap(),
+        swap_contract_address: &None,
+        swap_unique_data: &[],
+        payment_instructions: &None,
+        watcher_reward: None,
+        wait_for_confirmation_until: 0,
+    };
+    let tx = coin.send_maker_payment(args).wait().unwrap();
+    println!("swap tx {}", hex::encode(tx.tx_hash().0));
+
+    let refund_args = RefundPaymentArgs {
+        payment_tx: &tx.tx_hex(),
+        time_lock,
+        other_pubkey: taker_pub,
+        tx_type_with_secret_hash: SwapTxTypeWithSecretHash::TakerOrMakerPayment {
+            maker_secret_hash: &secret_hash,
+        },
+        swap_contract_address: &None,
+        swap_unique_data: pk_data.as_slice(),
+        watcher_reward: false,
+    };
+    let refund_tx = block_on(coin.send_maker_refunds_payment(refund_args)).unwrap();
+    println!("refund tx {}", hex::encode(refund_tx.tx_hash().0));
+}
+
+#[test]
+fn solana_coin_send_and_spend_maker_payment() {
+    let mm = _solana_supplied_node();
+    let platform_conf = block_on(enable_solana_with_tokens(
+        &mm,
+        "SOL-DEVNET",
+        &["USDC-SOL-DEVNET"],
+        "https://api.devnet.solana.com",
+        false,
+    ));
+
+    let ctx = MmCtxBuilder::default().into_mm_arc();
+    let pk_data = [1; 32];
+
+    let activation_request = SolanaWithTokensActivationRequest {
+        platform_request: SolanaActivationParams {
+            confirmation_commitment: Default::default(),
+            client_url: "https://api.devnet.solana.com".to_string(),
+            path_to_address: Default::default(),
+        },
+        spl_tokens_requests: vec![],
+        get_balances: false,
+    };
+    let coin = block_on(SolanaCoin::enable_platform_coin(
+        ctx.clone(),
+        "SOL".to_string(),
+        &platform_conf,
+        activation_request,
+        SolanaProtocolInfo::try_from_coin_protocol(CoinProtocol::SOLANA).unwrap(),
+
+    )).unwrap();
+
+    let lock_time = now_sec() - 1000;
+    let taker_pub = coin.get_public_key().unwrap();
+    let taker_pub = taker_pub.as_bytes();
+    let secret = [0; 32];
+    let secret_hash = sha256(&secret);
+
+    let maker_payment_args = SendPaymentArgs {
+        time_lock_duration: 0,
+        time_lock: lock_time,
+        other_pubkey: taker_pub,
+        secret_hash: secret_hash.as_slice(),
+        amount: "0.01".parse().unwrap(),
+        swap_contract_address: &None,
+        swap_unique_data: &[],
+        payment_instructions: &None,
+        watcher_reward: None,
+        wait_for_confirmation_until: 0,
+    };
+
+    let tx = coin.send_maker_payment(maker_payment_args).wait().unwrap();
+    println!("swap tx {}", hex::encode(tx.tx_hash().0));
+
+    let maker_pub = taker_pub;
+
+    let spends_payment_args = SpendPaymentArgs {
+        other_payment_tx: &tx.tx_hex(),
+        time_lock: lock_time,
+        other_pubkey: maker_pub,
+        secret: &secret,
+        secret_hash: &[],
+        swap_contract_address: &None,
+        swap_unique_data: pk_data.as_slice(),
+        watcher_reward: false,
+    };
+    let spend_tx = coin
+        .send_taker_spends_maker_payment(spends_payment_args)
+        .wait()
+        .unwrap();
+    println!("spend tx {}", hex::encode(spend_tx.tx_hash().0));
 }

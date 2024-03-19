@@ -4,8 +4,8 @@ mod erc20_token_activation;
 mod eth_with_token_activation;
 mod l2;
 #[cfg(not(target_arch = "wasm32"))] mod lightning_activation;
-mod platform_coin_with_tokens;
-mod prelude;
+pub mod platform_coin_with_tokens;
+pub mod prelude;
 mod slp_token_activation;
 #[cfg(all(
     feature = "enable-solana",
@@ -13,7 +13,7 @@ mod slp_token_activation;
     not(target_os = "android"),
     not(target_arch = "wasm32")
 ))]
-mod solana_with_tokens_activation;
+pub mod solana_with_tokens_activation;
 #[cfg(all(
     feature = "enable-solana",
     not(target_os = "ios"),

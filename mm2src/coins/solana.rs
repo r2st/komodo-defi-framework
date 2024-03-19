@@ -50,6 +50,9 @@ use std::convert::TryInto;
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::{convert::TryFrom, fmt::Debug, ops::Deref, sync::Arc};
+use num_traits::ToPrimitive;
+use solana_sdk::native_token::sol_to_lamports;
+use spl_token::solana_program;
 
 pub mod solana_common;
 mod solana_decode_tx_helpers;
@@ -145,10 +148,10 @@ impl From<AccountError> for WithdrawError {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SolanaActivationParams {
-    confirmation_commitment: CommitmentLevel,
-    client_url: String,
+    pub confirmation_commitment: CommitmentLevel,
+    pub client_url: String,
     #[serde(default)]
-    path_to_address: StandardHDCoinAddress,
+    pub path_to_address: StandardHDCoinAddress,
 }
 
 #[derive(Debug, Display)]
@@ -313,7 +316,7 @@ async fn withdraw_impl(coin: SolanaCoin, req: WithdrawRequest) -> WithdrawResult
     withdraw_base_coin_impl(coin, req).await
 }
 
-type SolTxFut = Box<dyn Future<Item = TransactionEnum, Error = TransactionErr> + Send + 'static>;
+type SolTxFut = Box<dyn Future<Item = SolSignature, Error = TransactionErr> + Send + 'static>;
 
 impl ToBytes for SolSignature {
     fn to_bytes(&self) -> Vec<u8> { self.to_string().into_bytes() }
@@ -422,23 +425,72 @@ impl SolanaCoin {
     }
 
     fn send_hash_time_locked_payment(&self, args: SendPaymentArgs<'_>) -> SolTxFut {
-        let receiver_pubkey = try_tx_fus!(args.other_pubkey.try_to_pubkey());
+        let receiver = try_tx_fus!(args.other_pubkey.try_to_pubkey());
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        let id = self.etomic_swap_id(try_tx_fus!(args.time_lock.try_into()), args.secret_hash);
-        self.sign_and_send_transaction(swap_program_id, vec![], vec![])
+        let amount = sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
+        let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
+        let swap_instruction = AtomicSwapInstruction::LamportsPayment {
+            secret_hash: <[u8; 32]>::try_from(args.secret_hash).expect("unable to convert to 32 byte array"),
+            lock_time: args.time_lock,
+            amount,
+            receiver,
+            rent_exemption_lamports,
+            vault_bump_seed,
+            vault_bump_seed_data,
+        };
+
+        let accounts = vec![
+            AccountMeta::new(self.key_pair.pubkey(), true), // Marked as signer
+            AccountMeta::new(vault_pda_data, false),  // Not a signer
+            AccountMeta::new(vault_pda, false),              // Not a signer
+            AccountMeta::new(solana_program::system_program::id(), false), //system_program must be included
+        ];
+        self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
     }
 
     fn spend_hash_time_locked_payment(&self, args: SpendPaymentArgs) -> SolTxFut {
-        let receiver_pubkey = try_tx_fus!(args.other_pubkey.try_to_pubkey());
+        let sender = try_tx_fus!(args.other_pubkey.try_to_pubkey());
+        let receiver = self.key_pair.pubkey();
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        let id = self.etomic_swap_id(try_tx_fus!(args.time_lock.try_into()), args.secret_hash);
-        self.sign_and_send_transaction(swap_program_id, vec![], vec![])
+        let amount = "0.01".parse().unwrap();//sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
+        let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
+        let swap_instruction = AtomicSwapInstruction::ReceiverSpend {
+            secret: <[u8; 32]>::try_from(args.secret).expect("unable to convert to 32 byte array"),
+            amount,
+            sender,
+            token_program: Pubkey::new_from_array([0; 32]),
+            vault_bump_seed,
+            vault_bump_seed_data,
+        };
+        let accounts = vec![
+            AccountMeta::new(self.key_pair.pubkey(), true), // Marked as signer
+            AccountMeta::new(vault_pda_data, false),  // Not a signer
+            AccountMeta::new(vault_pda, false),              // Not a signer
+            AccountMeta::new(solana_program::system_program::id(), false), //system_program must be included
+        ];
+        self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
     }
 
     fn refund_hash_time_locked_payment(&self, args: RefundPaymentArgs) -> SolTxFut {
-        let receiver_pubkey = try_tx_fus!(args.other_pubkey.try_to_pubkey());
+        let receiver = try_tx_fus!(args.other_pubkey.try_to_pubkey());
         let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        self.sign_and_send_transaction(swap_program_id, vec![], vec![])
+        let amount = "0.01".parse().unwrap();//sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
+        let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
+        let swap_instruction = AtomicSwapInstruction::SenderRefund {
+            secret_hash: <[u8; 32]>::try_from(args.payment_tx).expect("unable to convert to 32 byte array"),
+            amount,
+            receiver,
+            token_program: Pubkey::new_from_array([0; 32]),
+            vault_bump_seed,
+            vault_bump_seed_data,
+        };
+        let accounts = vec![
+            AccountMeta::new(self.key_pair.pubkey(), true), // Marked as signer
+            AccountMeta::new(vault_pda_data, false),  // Not a signer
+            AccountMeta::new(vault_pda, false),              // Not a signer
+            AccountMeta::new(solana_program::system_program::id(), false), //system_program must be included
+        ];
+        self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
     }
 
     fn etomic_swap_id(&self, time_lock: u32, secret_hash: &[u8]) -> Vec<u8> {
@@ -477,19 +529,86 @@ impl SolanaCoin {
                 recent_blockhash,
             );
 
-            match coin.client.send_and_confirm_transaction(&transaction) {
+            let res = match coin.client.send_and_confirm_transaction(&transaction) {
                 Ok(signature) => {
                     println!("Transaction sent successfully. Signature: {}", signature);
-                    Ok(TransactionEnum::SignedSolTx(signature))
+                    Ok(signature)
                 },
                 Err(e) => {
                     eprintln!("Error: {:?}", e);
                     Err(TransactionErr::Plain(ERRL!("Solana ClientError: {:?}", e)))
                 },
-            }
+            };
+            res
         };
         Box::new(fut.boxed().compat())
     }
+
+    fn create_vaults(&self, receiver_account_pubkey: Pubkey, program_id: Pubkey, space: u64) -> (Pubkey, Pubkey, u8, u8, u64){
+        let seeds: &[&[u8]] = &[b"swap", receiver_account_pubkey.as_ref()];
+        let (vault_pda, bump_seed) = Pubkey::find_program_address(seeds, &program_id);
+
+        let seeds_data: &[&[u8]] = &[b"swap_data", receiver_account_pubkey.as_ref()];
+        let (vault_pda_data, bump_seed_data) = Pubkey::find_program_address(seeds_data, &program_id);
+        let rent_exemption_lamports = 0;
+        (vault_pda, vault_pda_data, bump_seed, bump_seed_data, rent_exemption_lamports)
+    }
+
+    /*fn create_swap_account(&self, receiver_account_pubkey: Pubkey, program_id: Pubkey, space: u64) -> (Keypair, Pubkey, u8){
+        let coin = self.clone();
+        let payer = &coin.key_pair;
+        let swap_account = Keypair::new();
+        let last_blockhash = coin.client.get_latest_blockhash().expect("error getting last_blockhash");
+        // Calculate the minimum balance to make the swap account rent-exempt
+        // for storing 41 bytes of data
+        let minimum_balance = coin.client.get_minimum_balance_for_rent_exemption(space.try_into().expect("unable to convert to usize")).expect("unable to get rent");
+
+        // Create a system instruction to transfer the necessary lamports
+        // to the swap account for it to be rent-exempt
+        let create_account_instruction = system_instruction::create_account(
+            &payer.pubkey(),
+            &swap_account.pubkey(),
+            minimum_balance,
+            space,          // Space in bytes for the account data
+            &program_id, // The owner program ID
+        );
+
+        // Create and sign a transaction for the account creation and funding
+        let mut transaction =
+            Transaction::new_with_payer(&[create_account_instruction], Some(&payer.pubkey()));
+        transaction.sign(&[&payer, &swap_account], last_blockhash);
+
+        // Process the transaction
+        coin.client
+            .send_and_confirm_transaction(&transaction).expect("error creating swap account");
+
+        let assign_instruction = system_instruction::assign(&swap_account.pubkey(), &program_id);
+
+        let mut transaction =
+            Transaction::new_with_payer(&[assign_instruction], Some(&payer.pubkey()));
+        transaction.sign(&[&payer, &swap_account], last_blockhash);
+        coin.client
+            .send_and_confirm_transaction(&transaction).expect("error assigning program as owner of swap account");
+
+        let seeds: &[&[u8]] = &[b"swap", receiver_account_pubkey.as_ref()];
+        let (vault_pda, bump_seed) = Pubkey::find_program_address(seeds, &program_id);
+
+        let transfer_instruction = system_instruction::transfer(
+            &payer.pubkey(),
+            &vault_pda,
+            minimum_balance,
+        );
+
+        // Create and sign a transaction
+        let mut transaction =
+            Transaction::new_with_payer(&[transfer_instruction], Some(&payer.pubkey()));
+        transaction.sign(&[payer], last_blockhash);
+
+        // Process the transaction
+        coin.client
+            .send_and_confirm_transaction(&transaction).expect("error transferring minimum_balance to vault_pda");
+        (swap_account, vault_pda, bump_seed)
+    }*/
 }
 
 #[async_trait]
@@ -498,7 +617,7 @@ impl MarketCoinOps for SolanaCoin {
 
     fn my_address(&self) -> MmResult<String, MyAddressError> { Ok(self.my_address.clone()) }
 
-    fn get_public_key(&self) -> Result<String, MmError<UnexpectedDerivationMethod>> { unimplemented!() }
+    fn get_public_key(&self) -> Result<String, MmError<UnexpectedDerivationMethod>> { Ok(self.key_pair.pubkey().to_string()) }
 
     fn sign_message_hash(&self, _message: &str) -> Option<[u8; 32]> { unimplemented!() }
 
@@ -922,4 +1041,122 @@ impl MmCoin for SolanaCoin {
     fn on_disabled(&self) -> Result<(), AbortedError> { AbortableSystem::abort_all(&self.abortable_system) }
 
     fn on_token_deactivated(&self, _ticker: &str) {}
+}
+
+#[derive(Debug)]
+pub enum AtomicSwapInstruction {
+    LamportsPayment {
+        secret_hash: [u8; 32], // SHA-256 hash
+        lock_time: u64,
+        amount: u64,
+        receiver: Pubkey,
+        rent_exemption_lamports: u64,
+        vault_bump_seed: u8,
+        vault_bump_seed_data: u8,
+    },
+    SLPTokenPayment {
+        secret_hash: [u8; 32], // SHA-256 hash
+        lock_time: u64,
+        amount: u64,
+        receiver: Pubkey,
+        token_program: Pubkey,
+        rent_exemption_lamports: u64,
+        vault_bump_seed: u8,
+        vault_bump_seed_data: u8,
+    },
+    ReceiverSpend {
+        secret: [u8; 32],
+        amount: u64,
+        sender: Pubkey,
+        token_program: Pubkey,
+        vault_bump_seed: u8,
+        vault_bump_seed_data: u8,
+    },
+    SenderRefund {
+        secret_hash: [u8; 32], // SHA-256 hash
+        amount: u64,
+        receiver: Pubkey,
+        token_program: Pubkey,
+        vault_bump_seed: u8,
+        vault_bump_seed_data: u8,
+    },
+}
+
+impl AtomicSwapInstruction {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        match *self {
+            AtomicSwapInstruction::LamportsPayment {
+                ref secret_hash,
+                lock_time,
+                amount,
+                ref receiver,
+                rent_exemption_lamports,
+                vault_bump_seed,
+                vault_bump_seed_data,
+            } => {
+                buf.push(0); // Variant identifier for LamportsPayment
+                buf.extend_from_slice(secret_hash);
+                buf.extend_from_slice(&lock_time.to_le_bytes());
+                buf.extend_from_slice(&amount.to_le_bytes());
+                buf.extend_from_slice(&receiver.to_bytes());
+                buf.extend_from_slice(&rent_exemption_lamports.to_le_bytes());
+                buf.push(vault_bump_seed);
+                buf.push(vault_bump_seed_data);
+            }
+            AtomicSwapInstruction::SLPTokenPayment {
+                ref secret_hash,
+                lock_time,
+                amount,
+                ref receiver,
+                ref token_program,
+                rent_exemption_lamports,
+                vault_bump_seed,
+                vault_bump_seed_data,
+            } => {
+                buf.push(1); // Variant identifier for SLPTokenPayment
+                buf.extend_from_slice(secret_hash);
+                buf.extend_from_slice(&lock_time.to_le_bytes());
+                buf.extend_from_slice(&amount.to_le_bytes());
+                buf.extend_from_slice(&receiver.to_bytes());
+                buf.extend_from_slice(&token_program.to_bytes());
+                buf.extend_from_slice(&rent_exemption_lamports.to_le_bytes());
+                buf.push(vault_bump_seed);
+                buf.push(vault_bump_seed_data);
+            }
+            AtomicSwapInstruction::ReceiverSpend {
+                ref secret,
+                amount,
+                ref sender,
+                ref token_program,
+                vault_bump_seed,
+                vault_bump_seed_data,
+            } => {
+                buf.push(2); // Variant identifier for ReceiverSpend
+                buf.extend_from_slice(secret);
+                buf.extend_from_slice(&amount.to_le_bytes());
+                buf.extend_from_slice(&sender.to_bytes());
+                buf.extend_from_slice(&token_program.to_bytes());
+                buf.push(vault_bump_seed);
+                buf.push(vault_bump_seed_data);
+            }
+            AtomicSwapInstruction::SenderRefund {
+                ref secret_hash,
+                amount,
+                ref receiver,
+                ref token_program,
+                vault_bump_seed,
+                vault_bump_seed_data,
+            } => {
+                buf.push(3); // Variant identifier for SenderRefund
+                buf.extend_from_slice(secret_hash);
+                buf.extend_from_slice(&amount.to_le_bytes());
+                buf.extend_from_slice(&receiver.to_bytes());
+                buf.extend_from_slice(&token_program.to_bytes());
+                buf.push(vault_bump_seed);
+                buf.push(vault_bump_seed_data);
+            }
+        }
+        buf
+    }
 }
