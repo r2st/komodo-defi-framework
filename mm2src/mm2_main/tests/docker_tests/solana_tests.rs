@@ -1,7 +1,7 @@
 use futures01::Future;
 use crate::docker_tests::docker_tests_common::*;
 use mm2_number::bigdecimal::Zero;
-use mm2_test_helpers::for_tests::{disable_coin, enable_solana_with_tokens, enable_spl, sign_message, verify_message};
+use mm2_test_helpers::for_tests::{disable_coin, enable_solana_with_tokens, enable_solana_with_tokens_and_swap_contract, enable_spl, sign_message, verify_message};
 use mm2_test_helpers::structs::{EnableSolanaWithTokensResponse, EnableSplResponse, RpcV2Response, SignatureResponse,
                                 VerificationResponse};
 use serde_json as json;
@@ -154,11 +154,12 @@ fn test_disable_solana_platform_coin_with_tokens() {
 #[test]
 fn solana_coin_send_and_refund_maker_payment() {
     let mm = _solana_supplied_node();
-    let platform_conf = block_on(enable_solana_with_tokens(
+    let platform_conf = block_on(enable_solana_with_tokens_and_swap_contract(
         &mm,
         "SOL-DEVNET",
         &["USDC-SOL-DEVNET"],
         "https://api.devnet.solana.com",
+        "",
         false,
     ));
 
@@ -221,11 +222,12 @@ fn solana_coin_send_and_refund_maker_payment() {
 #[test]
 fn solana_coin_send_and_spend_maker_payment() {
     let mm = _solana_supplied_node();
-    let platform_conf = block_on(enable_solana_with_tokens(
+    let platform_conf = block_on(enable_solana_with_tokens_and_swap_contract(
         &mm,
         "SOL-DEVNET",
         &["USDC-SOL-DEVNET"],
         "https://api.devnet.solana.com",
+        "",
         false,
     ));
 
