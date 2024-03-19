@@ -2,7 +2,7 @@ use super::*;
 use crate::solana::solana_common_tests::{generate_key_pair_from_iguana_seed, generate_key_pair_from_seed,
                                          solana_coin_for_test, SolanaNet};
 use crate::solana::solana_decode_tx_helpers::SolanaConfirmedTransaction;
-use crate::MarketCoinOps;
+use crate::{CoinProtocol, MarketCoinOps, SwapTxTypeWithSecretHash};
 use base58::ToBase58;
 use common::{block_on, Future01CompatExt};
 use solana_client::rpc_request::TokenAccountsFilter;
@@ -10,6 +10,8 @@ use solana_sdk::signature::{Signature, Signer};
 use solana_transaction_status::UiTransactionEncoding;
 use std::ops::Neg;
 use std::str::FromStr;
+use mm2_core::mm_ctx::MmCtxBuilder;
+use mm2_test_helpers::for_tests::enable_solana_with_tokens_and_swap_contract;
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
@@ -325,4 +327,92 @@ fn solana_test_tx_history() {
         history.append(&mut txs);
     }
     println!("{}", serde_json::to_string(&history).unwrap());
+}
+
+#[test]
+fn solana_coin_send_and_refund_maker_payment() {
+    let passphrase = "federal stay trigger hour exist success game vapor become comfort action phone bright ill target wild nasty crumble dune close rare fabric hen iron".to_string();
+    let (_, coin) = solana_coin_for_test(passphrase, SolanaNet::Testnet);
+
+    let pk_data = [1; 32];
+    let time_lock = now_sec() - 3600;
+    let taker_pub = coin.get_public_key().unwrap();
+    let taker_pub = taker_pub.as_bytes();
+    let secret_hash = [0; 20];
+
+    let args = SendPaymentArgs {
+        time_lock_duration: 0,
+        time_lock,
+        other_pubkey: taker_pub,
+        secret_hash: &secret_hash,
+        amount: "0.01".parse().unwrap(),
+        swap_contract_address: &None,
+        swap_unique_data: &[],
+        payment_instructions: &None,
+        watcher_reward: None,
+        wait_for_confirmation_until: 0,
+    };
+    let tx = coin.send_maker_payment(args).wait().unwrap();
+    println!("swap tx {}", hex::encode(tx.tx_hash().0));
+
+    let refund_args = RefundPaymentArgs {
+        payment_tx: &tx.tx_hex(),
+        time_lock,
+        other_pubkey: taker_pub,
+        tx_type_with_secret_hash: SwapTxTypeWithSecretHash::TakerOrMakerPayment {
+            maker_secret_hash: &secret_hash,
+        },
+        swap_contract_address: &None,
+        swap_unique_data: pk_data.as_slice(),
+        watcher_reward: false,
+    };
+    let refund_tx = block_on(coin.send_maker_refunds_payment(refund_args)).unwrap();
+    println!("refund tx {}", hex::encode(refund_tx.tx_hash().0));
+}
+
+#[test]
+fn solana_coin_send_and_spend_maker_payment() {
+    let passphrase = "federal stay trigger hour exist success game vapor become comfort action phone bright ill target wild nasty crumble dune close rare fabric hen iron".to_string();
+    let (_, coin) = solana_coin_for_test(passphrase, SolanaNet::Testnet);
+
+    let pk_data = [1; 32];
+    let lock_time = now_sec() - 1000;
+    let taker_pub = coin.get_public_key().unwrap();
+    let taker_pub = taker_pub.as_bytes();
+    let secret = [0; 32];
+    let secret_hash = sha256(&secret);
+
+    let maker_payment_args = SendPaymentArgs {
+        time_lock_duration: 0,
+        time_lock: lock_time,
+        other_pubkey: taker_pub,
+        secret_hash: secret_hash.as_slice(),
+        amount: "0.01".parse().unwrap(),
+        swap_contract_address: &None,
+        swap_unique_data: &[],
+        payment_instructions: &None,
+        watcher_reward: None,
+        wait_for_confirmation_until: 0,
+    };
+
+    let tx = coin.send_maker_payment(maker_payment_args).wait().unwrap();
+    println!("swap tx {}", hex::encode(tx.tx_hash().0));
+
+    let maker_pub = taker_pub;
+
+    let spends_payment_args = SpendPaymentArgs {
+        other_payment_tx: &tx.tx_hex(),
+        time_lock: lock_time,
+        other_pubkey: maker_pub,
+        secret: &secret,
+        secret_hash: &[],
+        swap_contract_address: &None,
+        swap_unique_data: pk_data.as_slice(),
+        watcher_reward: false,
+    };
+    let spend_tx = coin
+        .send_taker_spends_maker_payment(spends_payment_args)
+        .wait()
+        .unwrap();
+    println!("spend tx {}", hex::encode(spend_tx.tx_hash().0));
 }
