@@ -428,9 +428,9 @@ impl SolanaCoin {
     }
 
     fn send_hash_time_locked_payment(&self, args: SendPaymentArgs<'_>) -> SolTxFut {
-        let receiver = try_tx_fus!(args.other_pubkey.try_to_pubkey());
-        let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
-        let amount = sol_to_lamports(args.amount.to_u64().expect("error converting to to_u64") as f64);
+        let receiver = Pubkey::new(args.other_pubkey.iter().as_slice());
+        let swap_program_id = Pubkey::new(&args.swap_contract_address.as_ref().unwrap().as_slice());
+        let amount = sol_to_lamports(args.amount.to_f64().unwrap());
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::LamportsPayment {
             secret_hash: <[u8; 32]>::try_from(args.secret_hash).expect("unable to convert to 32 byte array"),
@@ -449,12 +449,13 @@ impl SolanaCoin {
             AccountMeta::new(solana_program::system_program::id(), false), //system_program must be included
         ];
         self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
+
     }
 
     fn spend_hash_time_locked_payment(&self, args: SpendPaymentArgs) -> SolTxFut {
-        let sender = try_tx_fus!(args.other_pubkey.try_to_pubkey());
+        let sender = Pubkey::new(args.other_pubkey.iter().as_slice());
         let receiver = self.key_pair.pubkey();
-        let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
+        let swap_program_id = Pubkey::new(&args.swap_contract_address.as_ref().unwrap().as_slice());
         let (amount, _secret_hash, token_program) = self.get_transaction_details(args.other_payment_tx);
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, _rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::ReceiverSpend {
@@ -475,8 +476,8 @@ impl SolanaCoin {
     }
 
     fn refund_hash_time_locked_payment(&self, args: RefundPaymentArgs) -> SolTxFut {
-        let receiver = try_tx_fus!(args.other_pubkey.try_to_pubkey());
-        let swap_program_id = try_tx_fus!(args.swap_contract_address.try_to_pubkey());
+        let receiver = Pubkey::new(args.other_pubkey.iter().as_slice());
+        let swap_program_id = Pubkey::new(&args.swap_contract_address.as_ref().unwrap().as_slice());
         let (amount, secret_hash, token_program) = self.get_transaction_details(args.payment_tx);
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, rent_exemption_lamports) = self.create_vaults(receiver, swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::SenderRefund {

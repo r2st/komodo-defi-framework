@@ -344,14 +344,15 @@ fn solana_coin_send_and_refund_maker_payment() {
     let pk_data = [1; 32];
     let time_lock = now_sec() - 3600;
     let taker_pub = coin.get_public_key().unwrap();
-    let taker_pub = taker_pub.as_bytes();
-    let secret_hash = [0; 20];
+    let taker_pub = Pubkey::from_str(taker_pub.as_str()).unwrap();
+    let secret = [0; 32];
+    let secret_hash = sha256(&secret);
 
     let args = SendPaymentArgs {
         time_lock_duration: 0,
         time_lock,
-        other_pubkey: taker_pub,
-        secret_hash: &secret_hash,
+        other_pubkey: taker_pub.as_ref(),
+        secret_hash: secret_hash.as_slice(),
         amount: "0.01".parse().unwrap(),
         swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: &[],
@@ -365,9 +366,9 @@ fn solana_coin_send_and_refund_maker_payment() {
     let refund_args = RefundPaymentArgs {
         payment_tx: &tx.tx_hex(),
         time_lock,
-        other_pubkey: taker_pub,
+        other_pubkey: taker_pub.as_ref(),
         tx_type_with_secret_hash: SwapTxTypeWithSecretHash::TakerOrMakerPayment {
-            maker_secret_hash: &secret_hash,
+            maker_secret_hash: secret_hash.as_slice(),
         },
         swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: pk_data.as_slice(),
@@ -390,14 +391,14 @@ fn solana_coin_send_and_spend_maker_payment() {
     let pk_data = [1; 32];
     let lock_time = now_sec() - 1000;
     let taker_pub = coin.get_public_key().unwrap();
-    let taker_pub = taker_pub.as_bytes();
+    let taker_pub = Pubkey::from_str(taker_pub.as_str()).unwrap();
     let secret = [0; 32];
     let secret_hash = sha256(&secret);
 
     let maker_payment_args = SendPaymentArgs {
         time_lock_duration: 0,
         time_lock: lock_time,
-        other_pubkey: taker_pub,
+        other_pubkey: taker_pub.as_ref(),
         secret_hash: secret_hash.as_slice(),
         amount: "0.01".parse().unwrap(),
         swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
@@ -415,9 +416,9 @@ fn solana_coin_send_and_spend_maker_payment() {
     let spends_payment_args = SpendPaymentArgs {
         other_payment_tx: &tx.tx_hex(),
         time_lock: lock_time,
-        other_pubkey: maker_pub,
+        other_pubkey: maker_pub.as_ref(),
         secret: &secret,
-        secret_hash: &[],
+        secret_hash: secret_hash.as_slice(),
         swap_contract_address: &Some(Bytes::from(solana_program_id.clone())),
         swap_unique_data: pk_data.as_slice(),
         watcher_reward: false,
