@@ -460,7 +460,7 @@ impl SolanaCoin {
         let swap_program_id = Pubkey::new(&args.swap_contract_address.as_ref().unwrap().as_slice());
         let secret:[u8; 32] = <[u8; 32]>::try_from(args.secret).unwrap();
         let secret_hash = sha256(secret.as_slice());
-        let (lock_time, _secret_hash, amount, token_program) = self.get_transaction_details(args.other_payment_tx);
+        let (lock_time, _secret_hash, amount, token_program) = self.get_transaction_details(args.other_payment_tx).unwrap();
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, _rent_exemption_lamports) = self.create_vaults(lock_time, secret_hash.take(), swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::ReceiverSpend {
             secret,
@@ -483,7 +483,7 @@ impl SolanaCoin {
     fn refund_hash_time_locked_payment(&self, args: RefundPaymentArgs) -> SolTxFut {
         let receiver = Pubkey::new(args.other_pubkey.iter().as_slice());
         let swap_program_id = Pubkey::new(&args.swap_contract_address.as_ref().unwrap().as_slice());
-        let (lock_time, secret_hash, amount, token_program) = self.get_transaction_details(args.payment_tx);
+        let (lock_time, secret_hash, amount, token_program) = self.get_transaction_details(args.payment_tx).unwrap();
         let (vault_pda, vault_pda_data, vault_bump_seed, vault_bump_seed_data, _rent_exemption_lamports) = self.create_vaults(lock_time, secret_hash.clone(), swap_program_id, 41);
         let swap_instruction = AtomicSwapInstruction::SenderRefund {
             secret_hash,
@@ -503,7 +503,7 @@ impl SolanaCoin {
         self.sign_and_send_transaction(swap_program_id, accounts, swap_instruction.pack())
     }
 
-    fn get_transaction_details(&self, signature_bytes: &[u8]) -> (u64, [u8; 32], u64, Pubkey) {
+    fn get_transaction_details(&self, signature_bytes: &[u8]) -> Result<(u64, [u8; 32], u64, Pubkey), TransactionErr> {
         let coin = self.clone();
         println!("get_transaction_details: {:?}", signature_bytes);
         println!("get_transaction_details: {:?}", signature_bytes);
@@ -528,7 +528,7 @@ impl SolanaCoin {
                             vault_bump_seed,
                             vault_bump_seed_data,
                         } => {
-                            (lock_time, secret_hash, amount, Pubkey::new_from_array([0; 32]))
+                            Ok((lock_time, secret_hash, amount, Pubkey::new_from_array([0; 32])))
                         }
                         AtomicSwapInstruction::SLPTokenPayment {
                             secret_hash,
@@ -540,7 +540,7 @@ impl SolanaCoin {
                             vault_bump_seed,
                             vault_bump_seed_data,
                         } => {
-                            (lock_time, secret_hash, amount, token_program)
+                            Ok((lock_time, secret_hash, amount, token_program))
                         }
                         AtomicSwapInstruction::ReceiverSpend {
                             secret,
@@ -551,7 +551,7 @@ impl SolanaCoin {
                             vault_bump_seed,
                             vault_bump_seed_data,
                         } => {
-                            (lock_time, sha256(&secret).take(), amount, token_program)
+                            Ok((lock_time, sha256(&secret).take(), amount, token_program))
                         }
                         AtomicSwapInstruction::SenderRefund {
                             secret_hash,
@@ -562,17 +562,19 @@ impl SolanaCoin {
                             vault_bump_seed,
                             vault_bump_seed_data,
                         } => {
-                            (lock_time, secret_hash, amount, token_program)
+                            Ok((lock_time, secret_hash, amount, token_program))
                         }
                     }
                 } else {
                     println!("No data found");
-                    (0, sha256(&[0; 32]).take(), sol_to_lamports(0.01), Pubkey::new_from_array([0; 32]))
+                    //(0, sha256(&[0; 32]).take(), sol_to_lamports(0.01), Pubkey::new_from_array([0; 32]))
+                    Err(TransactionErr::Plain(ERRL!("Solana ClientError: No data found")))
                 }
             },
             Err(e) => {
                 println!("Error fetching transaction: {:?}", e);
-                (0, sha256(&[0; 32]).take(), sol_to_lamports(0.01), Pubkey::new_from_array([0; 32]))
+                //(0, sha256(&[0; 32]).take(), sol_to_lamports(0.01), Pubkey::new_from_array([0; 32]))
+                Err(TransactionErr::Plain(ERRL!("Solana ClientError: Error fetching transaction: {:?}", e)))
             },
         }
     }
