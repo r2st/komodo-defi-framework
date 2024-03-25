@@ -80,8 +80,8 @@ impl RegisterTokenInfo<SplToken> for SolanaCoin {
 #[derive(Clone, Debug, Deserialize)]
 pub struct SolanaWithTokensActivationRequest {
     #[serde(flatten)]
-    platform_request: SolanaActivationParams,
-    spl_tokens_requests: Vec<TokenActivationRequest<SplActivationRequest>>,
+    pub platform_request: SolanaActivationParams,
+    pub spl_tokens_requests: Vec<TokenActivationRequest<SplActivationRequest>>,
     #[serde(default = "true_f")]
     pub get_balances: bool,
 }
